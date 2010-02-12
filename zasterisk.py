@@ -2,6 +2,7 @@
 import pexpect
 import time
 import sys
+import posix_ipc
 from optparse import OptionParser, OptionGroup
 
 parser = OptionParser("usage=%prog [options] filename", version="%prog 0.1")
@@ -23,8 +24,9 @@ PASSWORD = 'password'
 
 (options, args) = parser.parse_args()
 
-def connect_ami():
+def connect_ami(semaphore):
     #TODO : Support astmanproxy or build own proxy to handle multiple simultaneous requests.
+    semaphore.acquire()
     child=pexpect.spawn('telnet localhost 5038')
     #child.logfile = sys.stdout
     child.expect("Asterisk Call Manager/1.1\r\n",timeout=1)
@@ -56,97 +58,107 @@ def check_module(child,modulename):
     else :
         child.expect("Message: Module not loaded\r")
         return False
-#child = connect_ami()
+#child = connect_ami(semaphore)
 #child.interact()
 
-if options.skypelicense:
-    child = connect_ami()
-    if check_module(child,"Skype"):
-        child.sendline("Action: SkypeLicenseStatus\r")
-        child.expect('CallsLicensed: \d+\r',timeout=1)
-        result = child.after
-    else:
-        result = "-1"
-if options.skypeactive:
-    child = connect_ami()
-    if check_module(child,"Skype"):
+semaphore=posix_ipc.Semaphore("/zasterisk",initial_value=1, flags=posix_ipc.O_CREAT)
+try:
+    if options.skypelicense:
+        child = connect_ami(semaphore)
+        if check_module(child,"Skype"):
+            child.sendline("Action: SkypeLicenseStatus\r")
+            child.expect('CallsLicensed: \d+\r',timeout=1)
+            result = child.after
+        else:
+            result = "-1"
+    elif options.skypeactive:
+        child = connect_ami(semaphore)
+        if check_module(child,"Skype"):
+            child.sendline("Action: CoreShowChannels\r")
+            child.expect('ListItems: \d+\r',timeout=1)
+            result = child.before.count("\nChannel: Skype")
+        else:
+            result = "-1"        
+    elif options.g729license:
+        child = connect_ami(semaphore)
+        if check_module(child,"G729"):
+            child.sendline("Action: G729LicenseStatus\r")
+            child.expect('ChannelsLicensed: \d+\r',timeout=1)
+            result = child.after.split(' ')[1]
+        else:
+            result = "-1"
+    elif options.g729activeenc:
+        child = connect_ami(semaphore)
+        if check_module(child,"G729"):
+            child.sendline("Action: G729LicenseStatus\r")
+            child.expect('EncodersInUse: \d+\r',timeout=1)
+            result = child.after.split(' ')[1]
+        else:
+            result = "-1"
+    elif options.g729activedec:
+        child = connect_ami(semaphore)
+        if check_module(child,"G729"):
+            child.sendline("Action: G729LicenseStatus\r")
+            child.expect('DecodersInUse: \d+\r',timeout=1)
+            result = child.after.split(' ')[1]
+        else:
+            result = "-1"        
+    elif options.channelsactive:
+        child = connect_ami(semaphore)
         child.sendline("Action: CoreShowChannels\r")
         child.expect('ListItems: \d+\r',timeout=1)
-        result = child.before.count("\nChannel: Skype")
-    else:
-        result = "-1"        
-elif options.g729license:
-    child = connect_ami()
-    if check_module(child,"G729"):
-        child.sendline("Action: G729LicenseStatus\r")
-        child.expect('ChannelsLicensed: \d+\r',timeout=1)
         result = child.after.split(' ')[1]
-    else:
-        result = "-1"
-elif options.g729activeenc:
-    child = connect_ami()
-    if check_module(child,"G729"):
-        child.sendline("Action: G729LicenseStatus\r")
-        child.expect('EncodersInUse: \d+\r',timeout=1)
-        result = child.after.split(' ')[1]
-    else:
-        result = "-1"
-elif options.g729activedec:
-    child = connect_ami()
-    if check_module(child,"G729"):
-        child.sendline("Action: G729LicenseStatus\r")
-        child.expect('DecodersInUse: \d+\r',timeout=1)
-        result = child.after.split(' ')[1]
-    else:
-        result = "-1"        
-elif options.channelsactive:
-    child = connect_ami()
-    child.sendline("Action: CoreShowChannels\r")
-    child.expect('ListItems: \d+\r',timeout=1)
-    result = child.after.split(' ')[1]
-elif options.callsactive:
-    child = connect_ami()
-    child.sendline("Action: CoreShowChannels\r")
-    child.expect('Message: Channels will follow\r',timeout=1)
-    child.expect('Event: CoreShowChannelsComplete\r',timeout=1)
-    to_parse = child.before[3:-3]
-    child.expect('ListItems: \d+\r',timeout=1)
-    if child.after.split(' ')[1] != "0\r":
-        channels = to_parse.split('\n\r\n')
-        callslist = []
-        for c in channels:
-            callslist.append([ e.split(': ') for e in c.split('\n') ])
-
-        #This is crappy and I know it. Fix next time
-        calls=[]
-        for c in callslist:
-            call = {}
-            for v in c :
-                call[v[0]]=v[1].strip()
-            calls.append(call)
-
-        count = 0
-        bridges=[]
-
-        for c in calls:
-            if c['ChannelStateDesc'] == 'Up' and c['BridgedChannel'] == '':
-                count = count + 1
-            elif c['ChannelStateDesc'] == 'Down':
-                pass
-            else :
-                id = c['UniqueID']
-                bid = c['BridgedUniqueID']
-                if bridges.count(id):
-                    #ID already in here. Remove it and call it a call.
-                    bridges.remove(id)
+    elif options.callsactive:
+        child = connect_ami(semaphore)
+        child.sendline("Action: CoreShowChannels\r")
+        child.expect('Message: Channels will follow\r',timeout=1)
+        child.expect('Event: CoreShowChannelsComplete\r',timeout=1)
+        to_parse = child.before[3:-3]
+        child.expect('ListItems: \d+\r',timeout=1)
+        if child.after.split(' ')[1] != "0\r":
+            channels = to_parse.split('\n\r\n')
+            callslist = []
+            for c in channels:
+                callslist.append([ e.split(': ') for e in c.split('\n') ])
+    
+            #This is crappy and I know it. Fix next time
+            calls=[]
+            for c in callslist:
+                call = {}
+                for v in c :
+                    call[v[0]]=v[1].strip()
+                calls.append(call)
+    
+            count = 0
+            bridges=[]
+    
+            for c in calls:
+                if c['ChannelStateDesc'] == 'Up' and c['BridgedChannel'] == '':
                     count = count + 1
+                elif c['ChannelStateDesc'] == 'Down':
+                    pass
                 else :
-                    bridges.append(bid)
-        result = count
-    else:
-        result = 0
-else :
-    parser.print_help() #Zabbix won't like this at all.
+                    id = c['UniqueID']
+                    bid = c['BridgedUniqueID']
+                    if bridges.count(id):
+                        #ID already in here. Remove it and call it a call.
+                        bridges.remove(id)
+                        count = count + 1
+                    else :
+                        bridges.append(bid)
+            result = count
+        else:
+            result = 0
+        child.sendline("Action: Logoff\r")
+        child.expect(pexpect.EOF,timeout=1)
+        child.close
+    else :
+        parser.print_help() #Zabbix won't like this at all.
+    semaphore.release()
+    print result
+except:
+    print "Unexpected error:", sys.exc_info()
+    semaphore.release()
 
 #TODO: Perhaps fetch all data at once, store in a temp file, and then have script grab from that, and refresh data when stale.
 #http://code.activestate.com/recipes/546512/
@@ -154,7 +166,4 @@ else :
 #http://docs.python.org/library/multiprocessing.html#using-a-pool-of-workers
 #http://stackoverflow.com/questions/2031121/detect-if-a-process-is-already-running-and-collaborate-with-it
 #http://linux.die.net/man/7/sem_overview
-child.sendline("Action: Logoff\r")
-child.expect(pexpect.EOF,timeout=1)
-child.close
-print result
+

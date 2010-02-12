@@ -68,7 +68,7 @@ try:
         if check_module(child,"Skype"):
             child.sendline("Action: SkypeLicenseStatus\r")
             child.expect('CallsLicensed: \d+\r',timeout=1)
-            result = child.after
+            result = child.after.split(' ')[1]
         else:
             result = "-1"
     elif options.skypeactive:

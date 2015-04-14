@@ -1,0 +1,1 @@
+All the components needed to track basic Asterisk call data in Zabbix, without having to muck about much with Zabbix External Checks or sudo.
